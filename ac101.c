@@ -1,3 +1,10 @@
+/* seeed-voicecard compat: legacy DAIFMT clock-master macros removed in kernel >= 6.x */
+#ifndef SND_SOC_DAIFMT_CBM_CFM
+#define SND_SOC_DAIFMT_CBM_CFM SND_SOC_DAIFMT_CBP_CFP
+#endif
+#ifndef SND_SOC_DAIFMT_CBS_CFS
+#define SND_SOC_DAIFMT_CBS_CFS SND_SOC_DAIFMT_CBC_CFC
+#endif
 /*
  * ac101.c
  *

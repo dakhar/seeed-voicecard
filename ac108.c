@@ -1,3 +1,10 @@
+/* seeed-voicecard compat: legacy DAIFMT clock-master macros removed in kernel >= 6.x */
+#ifndef SND_SOC_DAIFMT_CBM_CFM
+#define SND_SOC_DAIFMT_CBM_CFM SND_SOC_DAIFMT_CBP_CFP
+#endif
+#ifndef SND_SOC_DAIFMT_CBS_CFS
+#define SND_SOC_DAIFMT_CBS_CFS SND_SOC_DAIFMT_CBC_CFC
+#endif
 /*
  * ac10x.c  --  ac10x ALSA SoC Audio driver
  *
@@ -272,7 +279,7 @@ static int snd_ac108_put_volsw(struct snd_kcontrol *kcontrol,
 	.tlv.p = (tlv_array), \
 	.info = snd_soc_info_volsw, .get = snd_ac108_get_volsw,\
 	.put = snd_ac108_put_volsw, \
-	.private_value = SOC_SINGLE_VALUE(reg, shift, max, invert, chip) }
+	.private_value = SOC_SINGLE_VALUE(reg, shift, 0, max, invert, chip) }
 
 /* single ac108 */
 static const struct snd_kcontrol_new ac108_snd_controls[] = {
