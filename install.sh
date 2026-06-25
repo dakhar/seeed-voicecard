@@ -52,113 +52,60 @@ if [ $errorFound = 1 ] ; then
   exit 1
 fi
 
-ver="0.3"
 uname_r=$(uname -r)
 
-# we create a dir with this version to ensure that 'dkms remove' won't delete
-# the sources during kernel updates
-marker="0.0.0"
-
-_VER_RUN=
-function get_kernel_version() {
-  local ZIMAGE IMG_OFFSET
-
-  _VER_RUN=""
-  [ -z "$_VER_RUN" ] && {
-    ZIMAGE=/boot/kernel.img
-    [ -f /boot/firmware/vmlinuz ] && ZIMAGE=/boot/firmware/vmlinuz
-    # 64-bit-only kernel package
-    [ ! -f /boot/kernel.img ] && [ -f /boot/kernel8.img ] && ZIMAGE=/boot/kernel8.img
-    IMG_OFFSET=$(LC_ALL=C grep -abo $'\x1f\x8b\x08\x00' $ZIMAGE | head -n 1 | cut -d ':' -f 1)
-    _VER_RUN=$(dd if=$ZIMAGE obs=64K ibs=4 skip=$(( IMG_OFFSET / 4)) 2>/dev/null | zcat | grep -a -m1 "Linux version" | LC_ALL=C sed -e 's/^.*Linux/Linux/' | strings | awk '{ print $3; }')
-  }
-  echo "$_VER_RUN"
-  return 0
-}
-
-function check_kernel_headers() {
-  VER_RUN=$(get_kernel_version)
-  VER_HDR=$(dpkg -L raspberrypi-kernel-headers | egrep -m1 "/lib/modules/[^\/]+/build" | awk -F'/' '{ print $4; }')
-  [ "X$VER_RUN" == "X$VER_HDR" ] && {
-    return 0
-  }
-  VER_HDR=$(dpkg -L linux-headers-$VER_RUN | egrep -m1 "/lib/modules/[^\/]+/build" | awk -F'/' '{ print $4; }')
-  [ "X$VER_RUN" == "X$VER_HDR" ] && {
-    return 0
-  }
-
-  # echo RUN=$VER_RUN HDR=$VER_HDR
-  echo " !!! Your kernel version is $VER_RUN"
-  echo "     Not found *** corresponding *** kernel headers with apt-get."
-  echo "     This may occur if you have ran 'rpi-update'."
-  echo " Choose  *** y *** will revert the kernel to version $VER_HDR then continue."
-  echo " Choose  *** N *** will exit without this driver support, by default."
-  read -p "Would you like to proceed? (y/N)" -n 1 -r -s
-  echo
-  if ! [[ $REPLY =~ ^[Yy]$ ]]; then
-    exit 1;
-  fi
-
-  apt-get -y --reinstall install raspberrypi-kernel
-}
-
 # update and install required packages
+#
+# NOTE: This fork builds the kernel modules out-of-tree with plain `make`
+#       (not dkms), which is how the modules were verified on
+#       Raspberry Pi OS / Debian 13 "trixie", kernel 6.18.
 which apt &>/dev/null
 if [[ $? -eq 0 ]]; then
   apt update -y
-  # Raspbian kernel packages
-  apt-get -y install raspberrypi-kernel-headers raspberrypi-kernel
-  # Recent Raspbian has 64-bit kernel on 32-bit userspace
-  apt-get -y install gcc-aarch64-linux-gnu
-  # Ubuntu kernel packages
-  apt-get -y install linux-raspi linux-headers-raspi linux-image-raspi
-  apt-get -y install dkms git i2c-tools libasound2-plugins
-  # rpi-update checker
-  check_kernel_headers
+  # toolchain + matching kernel headers for the running kernel
+  apt-get -y install build-essential bc
+  apt-get -y install linux-headers-$(uname -r) || \
+    apt-get -y install raspberrypi-kernel-headers
+  # i2cdetect is required by the seeed-voicecard runtime detection script,
+  # alsactl/amixer/aplay by the service, libasound2-plugins for the ALSA conf.
+  apt-get -y install git i2c-tools alsa-utils libasound2-plugins
 fi
 
 # Arch Linux
 which pacman &>/dev/null
 if [[ $? -eq 0 ]]; then
-  pacman -Syu --needed git gcc automake make dkms linux-raspberrypi-headers i2c-tools
+  pacman -Syu --needed git gcc automake make i2c-tools alsa-utils
 fi
 
-# locate currently installed kernels (may be different to running kernel if
-# it's just been updated)
-base_ver=$(get_kernel_version)
-base_ver=${base_ver%%[-+]*}
-#kernels="${base_ver}+ ${base_ver}-v7+ ${base_ver}-v7l+"
-kernels=$(uname -r)
+# sanity check: kernel headers for the running kernel must be present
+if [ ! -d "/lib/modules/${uname_r}/build" ]; then
+  echo "Error: kernel headers for ${uname_r} not found at" \
+       "/lib/modules/${uname_r}/build" 1>&2
+  echo "Install the headers matching your running kernel and re-run." 1>&2
+  exit 1
+fi
 
-function install_module {
-  local _i
+# ---------------------------------------------------------------------------
+# Build and install the kernel modules (out-of-tree, via the Makefile).
+#   snd-soc-wm8960            -> sound/soc/codecs
+#   snd-soc-ac108            -> sound/soc/codecs
+#   snd-soc-seeed-voicecard  -> sound/soc/bcm
+# ---------------------------------------------------------------------------
+DEST=/lib/modules/${uname_r}/kernel
 
-  src=$1
-  mod=$2
-
-  if [[ -d /var/lib/dkms/$mod/$ver/$marker ]]; then
-    rmdir /var/lib/dkms/$mod/$ver/$marker
-  fi
-
-  if [[ -e /usr/src/$mod-$ver || -e /var/lib/dkms/$mod/$ver ]]; then
-    dkms remove --force -m $mod -v $ver --all
-    rm -rf /usr/src/$mod-$ver
-  fi
-
-  mkdir -p /usr/src/$mod-$ver
-  cp -a $src/* /usr/src/$mod-$ver/
-
-  dkms add -m $mod -v $ver
-  for _i in $kernels; do
-    dkms build -k $_i -m $mod -v $ver && {
-      dkms install --force -k $_i -m $mod -v $ver
-    }
-  done
-
-  mkdir -p /var/lib/dkms/$mod/$ver/$marker
+echo "Building kernel modules for ${uname_r} ..."
+make -C "/lib/modules/${uname_r}/build" M="$(pwd)" clean
+make -C "/lib/modules/${uname_r}/build" M="$(pwd)" modules || {
+  echo "Error: module build failed" 1>&2
+  exit 1
 }
 
-install_module "./" "seeed-voicecard"
+echo "Installing kernel modules ..."
+install -d "${DEST}/sound/soc/codecs" "${DEST}/sound/soc/bcm"
+cp snd-soc-wm8960.ko           "${DEST}/sound/soc/codecs/"
+cp snd-soc-ac108.ko            "${DEST}/sound/soc/codecs/"
+cp snd-soc-seeed-voicecard.ko  "${DEST}/sound/soc/bcm/"
+depmod -a "${uname_r}"
 
 
 # install dtbos
